@@ -7,6 +7,7 @@
 #include "Parsers/DataBridgeJsonCurveTableParser.h"
 #include "Engine/DataTable.h"
 #include "Engine/CurveTable.h"
+#include "HAL/IConsoleManager.h"
 
 void UDataBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -24,11 +25,19 @@ void UDataBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	RegisterParser(MakeShared<FDataBridgeCsvDataTableParser>());
 	RegisterParser(MakeShared<FDataBridgeJsonCurveTableParser>());
 
+	RegisterConsoleCommands();
+
 	UE_LOG(LogDataBridge, Log, TEXT("DataBridgeSubsystem initialized (env: %d)"), (int32)CurrentEnvironment);
 }
 
 void UDataBridgeSubsystem::Deinitialize()
 {
+	for (IConsoleCommand* Cmd : ConsoleCommands)
+	{
+		IConsoleManager::Get().UnregisterConsoleObject(Cmd);
+	}
+	ConsoleCommands.Empty();
+
 	HttpClient.Reset();
 	Parsers.Empty();
 	Cache.Empty();
@@ -126,6 +135,94 @@ void UDataBridgeSubsystem::SetEnvironment(EDataBridgeEnvironment NewEnvironment)
 // ============================================================
 // Internal
 // ============================================================
+
+void UDataBridgeSubsystem::RegisterConsoleCommands()
+{
+	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("DataBridge.RefreshAll"),
+		TEXT("Fetch all registered sources, ignoring cache"),
+		FConsoleCommandDelegate::CreateLambda([this]()
+		{
+			InvalidateAllCache();
+			FetchAllSources();
+		}),
+		ECVF_Default
+	));
+
+	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("DataBridge.Refresh"),
+		TEXT("Fetch a single source by name, ignoring cache. Usage: DataBridge.Refresh <SourceName>"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
+		{
+			if (Args.IsEmpty())
+			{
+				UE_LOG(LogDataBridge, Warning, TEXT("DataBridge.Refresh: SourceName argument required"));
+				return;
+			}
+			FName SourceName = FName(*Args[0]);
+			InvalidateCache(SourceName);
+			FetchSource(SourceName);
+		}),
+		ECVF_Default
+	));
+
+	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("DataBridge.SetEnvironment"),
+		TEXT("Switch environment at runtime. Usage: DataBridge.SetEnvironment <Local|Development|Staging|Production>"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
+		{
+			if (Args.IsEmpty())
+			{
+				UE_LOG(LogDataBridge, Warning, TEXT("DataBridge.SetEnvironment: environment argument required"));
+				return;
+			}
+			const FString& EnvStr = Args[0];
+			EDataBridgeEnvironment NewEnv = EDataBridgeEnvironment::Local;
+			if (EnvStr == TEXT("Development"))       NewEnv = EDataBridgeEnvironment::Development;
+			else if (EnvStr == TEXT("Staging"))      NewEnv = EDataBridgeEnvironment::Staging;
+			else if (EnvStr == TEXT("Production"))   NewEnv = EDataBridgeEnvironment::Production;
+			SetEnvironment(NewEnv);
+			UE_LOG(LogDataBridge, Log, TEXT("Environment set to: %s"), *EnvStr);
+		}),
+		ECVF_Default
+	));
+
+	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("DataBridge.PrintSources"),
+		TEXT("Print all registered sources with current environment and cache status"),
+		FConsoleCommandDelegate::CreateLambda([this]()
+		{
+			const UDataBridgeSettings* Settings = GetDefault<UDataBridgeSettings>();
+			UE_LOG(LogDataBridge, Log, TEXT("=== DataBridge Sources (env: %d) ==="), (int32)CurrentEnvironment);
+			for (const FDataBridgeSource& Source : Settings->Sources)
+			{
+				const bool bCached = IsCacheValid(Source.SourceName, Source.CacheTTLSeconds);
+				UE_LOG(LogDataBridge, Log, TEXT("  [%s] table=%s cached=%s"),
+					*Source.SourceName.ToString(),
+					*Source.TablePath.ToString(),
+					bCached ? TEXT("YES") : TEXT("NO"));
+			}
+		}),
+		ECVF_Default
+	));
+
+	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("DataBridge.InvalidateCache"),
+		TEXT("Invalidate cache. Usage: DataBridge.InvalidateCache [SourceName] (omit for all)"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
+		{
+			if (Args.IsEmpty())
+			{
+				InvalidateAllCache();
+			}
+			else
+			{
+				InvalidateCache(FName(*Args[0]));
+			}
+		}),
+		ECVF_Default
+	));
+}
 
 void UDataBridgeSubsystem::FetchSourceWithCallback(FName SourceName, TFunction<void(bool)> OnComplete)
 {

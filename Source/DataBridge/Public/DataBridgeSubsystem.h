@@ -64,6 +64,7 @@ public:
 	FOnDataBridgeAllSourcesCompleted OnAllSourcesCompleted;
 
 private:
+	void RegisterConsoleCommands();
 	void FetchSourceWithCallback(FName SourceName, TFunction<void(bool)> OnComplete);
 	void FetchTableInternal(FName SourceName, const FString& URL, UDataTable* TargetTable, EDataBridgeFormat Format, TFunction<void(bool)> OnComplete = nullptr);
 	void FetchCurveTableInternal(FName SourceName, const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format, TFunction<void(bool)> OnComplete = nullptr);
