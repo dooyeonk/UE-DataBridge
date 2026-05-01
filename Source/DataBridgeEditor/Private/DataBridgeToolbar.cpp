@@ -34,8 +34,13 @@ void FDataBridgeToolbar::Register()
 
 void FDataBridgeToolbar::Unregister()
 {
-	UToolMenus::UnRegisterStartupCallback(&FDataBridgeToolbar::RegisterMenus);
-	UToolMenus::Get()->RemoveMenu("LevelEditor.MainMenu.DataBridge");
+	// 엔진 종료 중엔 UToolMenus::Get()이 nullptr — 가드 필수
+	if (!UObjectInitialized() || IsEngineExitRequested()) return;
+
+	if (UToolMenus* ToolMenus = UToolMenus::Get())
+	{
+		ToolMenus->UnregisterOwnerByName(FName("DataBridge"));
+	}
 }
 
 void FDataBridgeToolbar::RegisterMenus()
