@@ -2,9 +2,9 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "DataBridgeTypes.h"
-#include "IDataBridgeParser.h"
-#include "IDataBridgeHttpClient.h"
+#include "Core/DataBridgeTypes.h"
+#include "Interfaces/IDataBridgeParser.h"
+#include "Http/IDataBridgeHttpClient.h"
 #include "DataBridgeSubsystem.generated.h"
 
 class UDataTable;

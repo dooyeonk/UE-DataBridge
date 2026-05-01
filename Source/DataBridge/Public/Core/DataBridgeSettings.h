@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
-#include "DataBridgeTypes.h"
+#include "Core/DataBridgeTypes.h"
 #include "DataBridgeSettings.generated.h"
 
 UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "DataBridge"))

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "IDataBridgeHttpClient.h"
+#include "Http/IDataBridgeHttpClient.h"
 
 class DATABRIDGE_API FDataBridgeHttpClient : public IDataBridgeHttpClient
 {

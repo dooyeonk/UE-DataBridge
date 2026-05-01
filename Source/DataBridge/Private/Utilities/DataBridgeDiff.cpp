@@ -1,4 +1,4 @@
-#include "DataBridgeDiff.h"
+#include "Utilities/DataBridgeDiff.h"
 #include "Engine/DataTable.h"
 
 FString FDataTableDiff::ToString(const FString& SourceName, const FString& URL, const FString& TablePath) const
@@ -51,27 +51,19 @@ FDataTableDiff ComputeDataTableDiff(UDataTable* Existing, UDataTable* Incoming)
 	const TMap<FName, uint8*>& ExistingRows = Existing->GetRowMap();
 	const TMap<FName, uint8*>& IncomingRows = Incoming->GetRowMap();
 
-	// Added / Modified
 	for (auto& Pair : IncomingRows)
 	{
 		const uint8* ExistingData = ExistingRows.FindRef(Pair.Key);
 		if (!ExistingData)
-		{
 			Diff.AddedRows.Add(Pair.Key);
-		}
 		else if (!RowStruct->CompareScriptStruct(ExistingData, Pair.Value, PPF_None))
-		{
 			Diff.ModifiedRows.Add(Pair.Key);
-		}
 	}
 
-	// Removed
 	for (auto& Pair : ExistingRows)
 	{
 		if (!IncomingRows.Contains(Pair.Key))
-		{
 			Diff.RemovedRows.Add(Pair.Key);
-		}
 	}
 
 	return Diff;

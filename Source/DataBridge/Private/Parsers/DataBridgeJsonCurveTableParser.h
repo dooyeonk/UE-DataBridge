@@ -1,6 +1,6 @@
 #pragma once
 
-#include "IDataBridgeParser.h"
+#include "Interfaces/IDataBridgeParser.h"
 
 class FDataBridgeJsonCurveTableParser : public IDataBridgeParser
 {

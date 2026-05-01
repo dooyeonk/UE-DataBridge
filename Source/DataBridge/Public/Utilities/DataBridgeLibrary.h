@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "DataBridgeTypes.h"
+#include "Core/DataBridgeTypes.h"
 #include "DataBridgeLibrary.generated.h"
 
 class UDataTable;

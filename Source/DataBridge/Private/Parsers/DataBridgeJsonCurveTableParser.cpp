@@ -1,5 +1,5 @@
 #include "DataBridgeJsonCurveTableParser.h"
-#include "DataBridgeLog.h"
+#include "Utilities/DataBridgeLog.h"
 #include "Engine/CurveTable.h"
 
 bool FDataBridgeJsonCurveTableParser::ParseToDataTable(const FString& RawData, UDataTable* TargetTable, FString& OutError)

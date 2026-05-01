@@ -1,6 +1,6 @@
 #include "DataBridgeToolbar.h"
-#include "DataBridgeSubsystem.h"
-#include "DataBridgeSettings.h"
+#include "Core/DataBridgeSubsystem.h"
+#include "Core/DataBridgeSettings.h"
 #include "DataBridgeEditorLog.h"
 #include "ToolMenus.h"
 #include "ISettingsModule.h"

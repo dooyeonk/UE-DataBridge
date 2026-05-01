@@ -1,5 +1,5 @@
 #include "DataBridgeJsonDataTableParser.h"
-#include "DataBridgeLog.h"
+#include "Utilities/DataBridgeLog.h"
 #include "Engine/DataTable.h"
 
 bool FDataBridgeJsonDataTableParser::ParseToDataTable(const FString& RawData, UDataTable* TargetTable, FString& OutError)

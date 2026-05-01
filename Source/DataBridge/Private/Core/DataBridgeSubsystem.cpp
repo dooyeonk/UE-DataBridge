@@ -1,7 +1,7 @@
-#include "DataBridgeSubsystem.h"
-#include "DataBridgeLog.h"
-#include "DataBridgeSettings.h"
-#include "DataBridgeHttpClient.h"
+#include "Core/DataBridgeSubsystem.h"
+#include "Utilities/DataBridgeLog.h"
+#include "Core/DataBridgeSettings.h"
+#include "Http/DataBridgeHttpClient.h"
 #include "Parsers/DataBridgeJsonDataTableParser.h"
 #include "Parsers/DataBridgeCsvDataTableParser.h"
 #include "Parsers/DataBridgeJsonCurveTableParser.h"
@@ -94,14 +94,9 @@ void UDataBridgeSubsystem::FetchAllSources()
 	{
 		FetchSourceWithCallback(Source.SourceName, [this, Remaining, FailCount](bool bSuccess)
 		{
-			if (!bSuccess)
-			{
-				(*FailCount)++;
-			}
+			if (!bSuccess) (*FailCount)++;
 			if (--(*Remaining) == 0)
-			{
 				OnAllSourcesCompleted.Broadcast(*FailCount == 0, *FailCount);
-			}
 		});
 	}
 }
@@ -211,14 +206,8 @@ void UDataBridgeSubsystem::RegisterConsoleCommands()
 		TEXT("Invalidate cache. Usage: DataBridge.InvalidateCache [SourceName] (omit for all)"),
 		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
 		{
-			if (Args.IsEmpty())
-			{
-				InvalidateAllCache();
-			}
-			else
-			{
-				InvalidateCache(FName(*Args[0]));
-			}
+			if (Args.IsEmpty()) InvalidateAllCache();
+			else InvalidateCache(FName(*Args[0]));
 		}),
 		ECVF_Default
 	));
@@ -238,7 +227,6 @@ void UDataBridgeSubsystem::FetchSourceWithCallback(FName SourceName, TFunction<v
 		return;
 	}
 
-	// 캐시 hit 확인
 	if (Source->CacheTTLSeconds > 0.0f && IsCacheValid(SourceName, Source->CacheTTLSeconds))
 	{
 		UE_LOG(LogDataBridge, Log, TEXT("Cache hit: %s"), *SourceName.ToString());
@@ -270,13 +258,9 @@ void UDataBridgeSubsystem::FetchSourceWithCallback(FName SourceName, TFunction<v
 	EDataBridgeFormat Format = Source->Format;
 
 	if (UDataTable* DataTable = Cast<UDataTable>(TableObject))
-	{
 		FetchTableInternal(SourceName, URL, DataTable, Format, MoveTemp(OnComplete));
-	}
 	else if (UCurveTable* CurveTable = Cast<UCurveTable>(TableObject))
-	{
 		FetchCurveTableInternal(SourceName, URL, CurveTable, Format, MoveTemp(OnComplete));
-	}
 	else
 	{
 		FString Error = TEXT("TablePath is not a DataTable or CurveTable");
@@ -353,10 +337,7 @@ void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& U
 			return;
 		}
 
-		if (SourceName != NAME_None)
-		{
-			UpdateCache(SourceName);
-		}
+		if (SourceName != NAME_None) UpdateCache(SourceName);
 
 		UE_LOG(LogDataBridge, Log, TEXT("FetchTable success: %s"), *SourceName.ToString());
 		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
@@ -414,10 +395,7 @@ void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FStri
 			return;
 		}
 
-		if (SourceName != NAME_None)
-		{
-			UpdateCache(SourceName);
-		}
+		if (SourceName != NAME_None) UpdateCache(SourceName);
 
 		UE_LOG(LogDataBridge, Log, TEXT("FetchCurveTable success: %s"), *SourceName.ToString());
 		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
@@ -428,14 +406,9 @@ void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FStri
 FString UDataBridgeSubsystem::ResolveURL(const FDataBridgeSource& Source) const
 {
 	if (const FString* URL = Source.URLs.Find(CurrentEnvironment))
-	{
 		return *URL;
-	}
-	// 현재 환경 URL 없으면 Local로 폴백
 	if (const FString* FallbackURL = Source.URLs.Find(EDataBridgeEnvironment::Local))
-	{
 		return *FallbackURL;
-	}
 	return FString();
 }
 
@@ -443,14 +416,10 @@ FName UDataBridgeSubsystem::ResolveParserName(EDataBridgeFormat Format, const FS
 {
 	EDataBridgeFormat Resolved = Format;
 	if (Format == EDataBridgeFormat::Auto)
-	{
 		Resolved = URL.EndsWith(TEXT(".csv")) ? EDataBridgeFormat::Csv : EDataBridgeFormat::Json;
-	}
 
 	if (bCurveTable)
-	{
-		return FName("JsonCurve"); // Csv CurveTable은 미지원 (v1.0)
-	}
+		return FName("JsonCurve");
 
 	return Resolved == EDataBridgeFormat::Csv ? FName("Csv") : FName("Json");
 }

@@ -1,5 +1,5 @@
-#include "DataBridgeHttpClient.h"
-#include "DataBridgeLog.h"
+#include "Http/DataBridgeHttpClient.h"
+#include "Utilities/DataBridgeLog.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"

@@ -1,6 +1,6 @@
 #include "DataBridgeUpdateCommandlet.h"
-#include "DataBridgeSettings.h"
-#include "DataBridgeDiff.h"
+#include "Core/DataBridgeSettings.h"
+#include "Utilities/DataBridgeDiff.h"
 #include "DataBridgeEditorLog.h"
 #include "HttpModule.h"
 #include "HttpManager.h"
