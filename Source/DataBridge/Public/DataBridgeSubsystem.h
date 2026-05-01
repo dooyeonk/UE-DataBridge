@@ -64,11 +64,16 @@ public:
 	FOnDataBridgeAllSourcesCompleted OnAllSourcesCompleted;
 
 private:
-	void FetchTableInternal(FName SourceName, const FString& URL, UDataTable* TargetTable, EDataBridgeFormat Format);
-	void FetchCurveTableInternal(FName SourceName, const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format);
+	void FetchSourceWithCallback(FName SourceName, TFunction<void(bool)> OnComplete);
+	void FetchTableInternal(FName SourceName, const FString& URL, UDataTable* TargetTable, EDataBridgeFormat Format, TFunction<void(bool)> OnComplete = nullptr);
+	void FetchCurveTableInternal(FName SourceName, const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format, TFunction<void(bool)> OnComplete = nullptr);
 
 	FString ResolveURL(const FDataBridgeSource& Source) const;
 	FName ResolveParserName(EDataBridgeFormat Format, const FString& URL, bool bCurveTable) const;
+
+	FString MakeCacheKey(FName SourceName) const;
+	bool IsCacheValid(FName SourceName, float TTLSeconds) const;
+	void UpdateCache(FName SourceName);
 
 	TSharedPtr<IDataBridgeHttpClient> HttpClient;
 	TMap<FName, TSharedPtr<IDataBridgeParser>> Parsers;
@@ -81,6 +86,5 @@ private:
 
 	EDataBridgeEnvironment CurrentEnvironment = EDataBridgeEnvironment::Local;
 
-	// 6-C: 콘솔 명령 핸들 보관
 	TArray<IConsoleCommand*> ConsoleCommands;
 };

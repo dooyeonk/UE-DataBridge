@@ -64,54 +64,37 @@ void UDataBridgeSubsystem::FetchCurveTable(const FString& URL, UCurveTable* Targ
 
 void UDataBridgeSubsystem::FetchSource(FName SourceName)
 {
-	const UDataBridgeSettings* Settings = GetDefault<UDataBridgeSettings>();
-	const FDataBridgeSource* Source = Settings->FindSource(SourceName);
-
-	if (!Source)
-	{
-		FString Error = FString::Printf(TEXT("Source not registered: %s"), *SourceName.ToString());
-		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
-		OnFetchCompleted.Broadcast(SourceName, false, Error);
-		return;
-	}
-
-	FString URL = ResolveURL(*Source);
-	if (URL.IsEmpty())
-	{
-		FString Error = FString::Printf(TEXT("No URL for current environment: %s"), *SourceName.ToString());
-		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
-		OnFetchCompleted.Broadcast(SourceName, false, Error);
-		return;
-	}
-
-	UObject* TableObject = Source->TablePath.TryLoad();
-	if (!TableObject)
-	{
-		FString Error = FString::Printf(TEXT("Failed to load table asset: %s"), *Source->TablePath.ToString());
-		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
-		OnFetchCompleted.Broadcast(SourceName, false, Error);
-		return;
-	}
-
-	if (UDataTable* DataTable = Cast<UDataTable>(TableObject))
-	{
-		FetchTableInternal(SourceName, URL, DataTable, Source->Format);
-	}
-	else if (UCurveTable* CurveTable = Cast<UCurveTable>(TableObject))
-	{
-		FetchCurveTableInternal(SourceName, URL, CurveTable, Source->Format);
-	}
-	else
-	{
-		FString Error = TEXT("TablePath is not a DataTable or CurveTable");
-		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
-		OnFetchCompleted.Broadcast(SourceName, false, Error);
-	}
+	FetchSourceWithCallback(SourceName, nullptr);
 }
 
 void UDataBridgeSubsystem::FetchAllSources()
 {
-	// 6-B에서 구현
+	const UDataBridgeSettings* Settings = GetDefault<UDataBridgeSettings>();
+
+	if (Settings->Sources.IsEmpty())
+	{
+		OnAllSourcesCompleted.Broadcast(true, 0);
+		return;
+	}
+
+	const int32 Total = Settings->Sources.Num();
+	TSharedPtr<int32> Remaining = MakeShared<int32>(Total);
+	TSharedPtr<int32> FailCount = MakeShared<int32>(0);
+
+	for (const FDataBridgeSource& Source : Settings->Sources)
+	{
+		FetchSourceWithCallback(Source.SourceName, [this, Remaining, FailCount](bool bSuccess)
+		{
+			if (!bSuccess)
+			{
+				(*FailCount)++;
+			}
+			if (--(*Remaining) == 0)
+			{
+				OnAllSourcesCompleted.Broadcast(*FailCount == 0, *FailCount);
+			}
+		});
+	}
 }
 
 // ============================================================
@@ -120,12 +103,14 @@ void UDataBridgeSubsystem::FetchAllSources()
 
 void UDataBridgeSubsystem::InvalidateCache(FName SourceName)
 {
-	// 6-B에서 구현
+	Cache.Remove(MakeCacheKey(SourceName));
+	UE_LOG(LogDataBridge, Log, TEXT("Cache invalidated: %s"), *SourceName.ToString());
 }
 
 void UDataBridgeSubsystem::InvalidateAllCache()
 {
-	// 6-B에서 구현
+	Cache.Empty();
+	UE_LOG(LogDataBridge, Log, TEXT("All cache invalidated"));
 }
 
 // ============================================================
@@ -142,11 +127,91 @@ void UDataBridgeSubsystem::SetEnvironment(EDataBridgeEnvironment NewEnvironment)
 // Internal
 // ============================================================
 
-void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& URL, UDataTable* TargetTable, EDataBridgeFormat Format)
+void UDataBridgeSubsystem::FetchSourceWithCallback(FName SourceName, TFunction<void(bool)> OnComplete)
+{
+	const UDataBridgeSettings* Settings = GetDefault<UDataBridgeSettings>();
+	const FDataBridgeSource* Source = Settings->FindSource(SourceName);
+
+	if (!Source)
+	{
+		FString Error = FString::Printf(TEXT("Source not registered: %s"), *SourceName.ToString());
+		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
+		OnFetchCompleted.Broadcast(SourceName, false, Error);
+		if (OnComplete) OnComplete(false);
+		return;
+	}
+
+	// 캐시 hit 확인
+	if (Source->CacheTTLSeconds > 0.0f && IsCacheValid(SourceName, Source->CacheTTLSeconds))
+	{
+		UE_LOG(LogDataBridge, Log, TEXT("Cache hit: %s"), *SourceName.ToString());
+		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
+		if (OnComplete) OnComplete(true);
+		return;
+	}
+
+	FString URL = ResolveURL(*Source);
+	if (URL.IsEmpty())
+	{
+		FString Error = FString::Printf(TEXT("No URL for current environment: %s"), *SourceName.ToString());
+		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
+		OnFetchCompleted.Broadcast(SourceName, false, Error);
+		if (OnComplete) OnComplete(false);
+		return;
+	}
+
+	UObject* TableObject = Source->TablePath.TryLoad();
+	if (!TableObject)
+	{
+		FString Error = FString::Printf(TEXT("Failed to load table asset: %s"), *Source->TablePath.ToString());
+		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
+		OnFetchCompleted.Broadcast(SourceName, false, Error);
+		if (OnComplete) OnComplete(false);
+		return;
+	}
+
+	EDataBridgeFormat Format = Source->Format;
+
+	if (UDataTable* DataTable = Cast<UDataTable>(TableObject))
+	{
+		FetchTableInternal(SourceName, URL, DataTable, Format, MoveTemp(OnComplete));
+	}
+	else if (UCurveTable* CurveTable = Cast<UCurveTable>(TableObject))
+	{
+		FetchCurveTableInternal(SourceName, URL, CurveTable, Format, MoveTemp(OnComplete));
+	}
+	else
+	{
+		FString Error = TEXT("TablePath is not a DataTable or CurveTable");
+		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
+		OnFetchCompleted.Broadcast(SourceName, false, Error);
+		if (OnComplete) OnComplete(false);
+	}
+}
+
+FString UDataBridgeSubsystem::MakeCacheKey(FName SourceName) const
+{
+	return FString::Printf(TEXT("%s_%d"), *SourceName.ToString(), (int32)CurrentEnvironment);
+}
+
+bool UDataBridgeSubsystem::IsCacheValid(FName SourceName, float TTLSeconds) const
+{
+	const FCacheEntry* Entry = Cache.Find(MakeCacheKey(SourceName));
+	if (!Entry) return false;
+	return (FPlatformTime::Seconds() - Entry->FetchTime) < TTLSeconds;
+}
+
+void UDataBridgeSubsystem::UpdateCache(FName SourceName)
+{
+	Cache.FindOrAdd(MakeCacheKey(SourceName)).FetchTime = FPlatformTime::Seconds();
+}
+
+void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& URL, UDataTable* TargetTable, EDataBridgeFormat Format, TFunction<void(bool)> OnComplete)
 {
 	if (!ensureMsgf(TargetTable, TEXT("FetchTableInternal: TargetTable is null")))
 	{
 		OnFetchCompleted.Broadcast(SourceName, false, TEXT("TargetTable is null"));
+		if (OnComplete) OnComplete(false);
 		return;
 	}
 
@@ -157,18 +222,20 @@ void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& U
 		FString Error = FString::Printf(TEXT("No parser registered for format: %s"), *ParserName.ToString());
 		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
 		OnFetchCompleted.Broadcast(SourceName, false, Error);
+		if (OnComplete) OnComplete(false);
 		return;
 	}
 
 	TSharedPtr<IDataBridgeParser> Parser = *ParserPtr;
 
-	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser](bool bSuccess, const FString& Body, int32 StatusCode)
+	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
 	{
 		if (!bSuccess)
 		{
 			FString Error = FString::Printf(TEXT("HTTP error: %d"), StatusCode);
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchTable failed — %s"), *Error);
 			OnFetchCompleted.Broadcast(SourceName, false, Error);
+			if (OnComplete) OnComplete(false);
 			return;
 		}
 
@@ -176,6 +243,7 @@ void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& U
 		{
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchTable: empty response"));
 			OnFetchCompleted.Broadcast(SourceName, false, TEXT("Empty response"));
+			if (OnComplete) OnComplete(false);
 			return;
 		}
 
@@ -184,19 +252,27 @@ void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& U
 		{
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchTable parse error: %s"), *ParseError);
 			OnFetchCompleted.Broadcast(SourceName, false, ParseError);
+			if (OnComplete) OnComplete(false);
 			return;
+		}
+
+		if (SourceName != NAME_None)
+		{
+			UpdateCache(SourceName);
 		}
 
 		UE_LOG(LogDataBridge, Log, TEXT("FetchTable success: %s"), *SourceName.ToString());
 		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
+		if (OnComplete) OnComplete(true);
 	});
 }
 
-void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format)
+void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format, TFunction<void(bool)> OnComplete)
 {
 	if (!ensureMsgf(TargetTable, TEXT("FetchCurveTableInternal: TargetTable is null")))
 	{
 		OnFetchCompleted.Broadcast(SourceName, false, TEXT("TargetTable is null"));
+		if (OnComplete) OnComplete(false);
 		return;
 	}
 
@@ -207,18 +283,20 @@ void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FStri
 		FString Error = FString::Printf(TEXT("No parser registered for format: %s"), *ParserName.ToString());
 		UE_LOG(LogDataBridge, Warning, TEXT("%s"), *Error);
 		OnFetchCompleted.Broadcast(SourceName, false, Error);
+		if (OnComplete) OnComplete(false);
 		return;
 	}
 
 	TSharedPtr<IDataBridgeParser> Parser = *ParserPtr;
 
-	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser](bool bSuccess, const FString& Body, int32 StatusCode)
+	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
 	{
 		if (!bSuccess)
 		{
 			FString Error = FString::Printf(TEXT("HTTP error: %d"), StatusCode);
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchCurveTable failed — %s"), *Error);
 			OnFetchCompleted.Broadcast(SourceName, false, Error);
+			if (OnComplete) OnComplete(false);
 			return;
 		}
 
@@ -226,6 +304,7 @@ void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FStri
 		{
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchCurveTable: empty response"));
 			OnFetchCompleted.Broadcast(SourceName, false, TEXT("Empty response"));
+			if (OnComplete) OnComplete(false);
 			return;
 		}
 
@@ -234,11 +313,18 @@ void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FStri
 		{
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchCurveTable parse error: %s"), *ParseError);
 			OnFetchCompleted.Broadcast(SourceName, false, ParseError);
+			if (OnComplete) OnComplete(false);
 			return;
+		}
+
+		if (SourceName != NAME_None)
+		{
+			UpdateCache(SourceName);
 		}
 
 		UE_LOG(LogDataBridge, Log, TEXT("FetchCurveTable success: %s"), *SourceName.ToString());
 		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
+		if (OnComplete) OnComplete(true);
 	});
 }
 
