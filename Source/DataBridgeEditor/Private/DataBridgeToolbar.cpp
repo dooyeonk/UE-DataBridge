@@ -1,12 +1,30 @@
 #include "DataBridgeToolbar.h"
-#include "Core/DataBridgeSubsystem.h"
+#include "DataBridgeUpdateCommandlet.h"
 #include "Core/DataBridgeSettings.h"
 #include "DataBridgeEditorLog.h"
 #include "ToolMenus.h"
 #include "ISettingsModule.h"
-#include "Engine/GameInstance.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "DataBridgeToolbar"
+
+namespace
+{
+	void ShowNotification(const FString& Message, bool bSuccess)
+	{
+		FNotificationInfo Info(FText::FromString(Message));
+		Info.ExpireDuration = 4.0f;
+		Info.bUseLargeFont = false;
+		TSharedPtr<SNotificationItem> Notif = FSlateNotificationManager::Get().AddNotification(Info);
+		if (Notif.IsValid())
+		{
+			Notif->SetCompletionState(bSuccess
+				? SNotificationItem::CS_Success
+				: SNotificationItem::CS_Fail);
+		}
+	}
+}
 
 void FDataBridgeToolbar::Register()
 {
@@ -41,21 +59,9 @@ void FDataBridgeToolbar::BuildDropdownMenu(FMenuBuilder& MenuBuilder)
 	{
 		MenuBuilder.AddMenuEntry(
 			LOCTEXT("RefreshAll", "Refresh All Sources"),
-			LOCTEXT("RefreshAllTooltip", "Fetch all registered sources (requires active PIE)"),
+			LOCTEXT("RefreshAllTooltip", "Fetch all registered sources and update .uasset files"),
 			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([]()
-			{
-				UDataBridgeSubsystem* Subsystem = FDataBridgeToolbar::FindPIESubsystem();
-				if (Subsystem)
-				{
-					Subsystem->InvalidateAllCache();
-					Subsystem->FetchAllSources();
-				}
-				else
-				{
-					UE_LOG(LogDataBridgeEditor, Warning, TEXT("Refresh All: no active PIE session"));
-				}
-			}))
+			FUIAction(FExecuteAction::CreateStatic(&FDataBridgeToolbar::RefreshAll))
 		);
 
 		MenuBuilder.AddSubMenu(
@@ -105,33 +111,40 @@ void FDataBridgeToolbar::BuildSourcesSubmenu(FMenuBuilder& MenuBuilder)
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([SourceName]()
 			{
-				UDataBridgeSubsystem* Subsystem = FDataBridgeToolbar::FindPIESubsystem();
-				if (Subsystem)
-				{
-					Subsystem->InvalidateCache(SourceName);
-					Subsystem->FetchSource(SourceName);
-				}
-				else
-				{
-					UE_LOG(LogDataBridgeEditor, Warning, TEXT("Refresh Source: no active PIE session"));
-				}
+				FDataBridgeToolbar::RefreshSource(SourceName);
 			}))
 		);
 	}
 }
 
-UDataBridgeSubsystem* FDataBridgeToolbar::FindPIESubsystem()
+void FDataBridgeToolbar::RefreshSource(FName SourceName)
 {
-	if (!GEngine) return nullptr;
+	UE_LOG(LogDataBridgeEditor, Log, TEXT("Toolbar: refreshing %s"), *SourceName.ToString());
+	auto Result = UDataBridgeUpdateCommandlet::ProcessSource(SourceName, NAME_None, /*bDryRun=*/false);
 
-	for (const FWorldContext& Context : GEngine->GetWorldContexts())
+	const FString Msg = FString::Printf(TEXT("DataBridge: %s — %s"),
+		*SourceName.ToString(), *Result.Message);
+	ShowNotification(Msg, Result.bSuccess);
+}
+
+void FDataBridgeToolbar::RefreshAll()
+{
+	const UDataBridgeSettings* Settings = GetDefault<UDataBridgeSettings>();
+	if (Settings->Sources.IsEmpty())
 	{
-		if (Context.WorldType == EWorldType::PIE && Context.OwningGameInstance)
-		{
-			return Context.OwningGameInstance->GetSubsystem<UDataBridgeSubsystem>();
-		}
+		ShowNotification(TEXT("DataBridge: no sources registered"), false);
+		return;
 	}
-	return nullptr;
+
+	int32 Success = 0, Fail = 0;
+	for (const FDataBridgeSource& Source : Settings->Sources)
+	{
+		auto Result = UDataBridgeUpdateCommandlet::ProcessSource(Source.SourceName, NAME_None, /*bDryRun=*/false);
+		(Result.bSuccess ? Success : Fail)++;
+	}
+
+	const FString Msg = FString::Printf(TEXT("DataBridge: %d succeeded, %d failed"), Success, Fail);
+	ShowNotification(Msg, Fail == 0);
 }
 
 #undef LOCTEXT_NAMESPACE

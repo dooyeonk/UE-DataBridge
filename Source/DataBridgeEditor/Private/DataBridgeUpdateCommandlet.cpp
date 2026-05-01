@@ -7,9 +7,23 @@
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
 #include "Engine/DataTable.h"
+#include "Engine/CurveTable.h"
 #include "Containers/Ticker.h"
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
+
+namespace
+{
+	bool ParseEnvironment(const FString& Str, EDataBridgeEnvironment& OutEnv)
+	{
+		if (Str.IsEmpty()) return false;
+		if (Str == TEXT("Local"))            { OutEnv = EDataBridgeEnvironment::Local;       return true; }
+		if (Str == TEXT("Development"))      { OutEnv = EDataBridgeEnvironment::Development; return true; }
+		if (Str == TEXT("Staging"))          { OutEnv = EDataBridgeEnvironment::Staging;     return true; }
+		if (Str == TEXT("Production"))       { OutEnv = EDataBridgeEnvironment::Production;  return true; }
+		return false;
+	}
+}
 
 int32 UDataBridgeUpdateCommandlet::Main(const FString& Params)
 {
@@ -60,10 +74,12 @@ int32 UDataBridgeUpdateCommandlet::Main(const FString& Params)
 		return 3;
 	}
 
+	const FName EnvOverride = EnvironmentStr.IsEmpty() ? NAME_None : FName(*EnvironmentStr);
+
 	int32 FailCount = 0;
 	for (FName SourceName : SourcesToProcess)
 	{
-		FSourceResult Result = ProcessSource(SourceName, EnvironmentStr, bDryRun);
+		FSourceResult Result = ProcessSource(SourceName, EnvOverride, bDryRun);
 		if (Result.bSuccess)
 		{
 			UE_CLOG(!bDryRun, LogDataBridgeEditor, Log, TEXT("SUCCESS: %s — %s"), *SourceName.ToString(), *Result.Message);
@@ -81,7 +97,7 @@ int32 UDataBridgeUpdateCommandlet::Main(const FString& Params)
 }
 
 UDataBridgeUpdateCommandlet::FSourceResult UDataBridgeUpdateCommandlet::ProcessSource(
-	FName SourceName, const FString& EnvironmentStr, bool bDryRun)
+	FName SourceName, FName EnvironmentOverride, bool bDryRun)
 {
 	FSourceResult Result;
 	Result.SourceName = SourceName;
@@ -94,14 +110,10 @@ UDataBridgeUpdateCommandlet::FSourceResult UDataBridgeUpdateCommandlet::ProcessS
 		return Result;
 	}
 
-	// 환경 결정
 	EDataBridgeEnvironment Env = Settings->CurrentEnvironment;
-	if (!EnvironmentStr.IsEmpty())
+	if (!EnvironmentOverride.IsNone())
 	{
-		if (EnvironmentStr == TEXT("Local"))            Env = EDataBridgeEnvironment::Local;
-		else if (EnvironmentStr == TEXT("Development")) Env = EDataBridgeEnvironment::Development;
-		else if (EnvironmentStr == TEXT("Staging"))     Env = EDataBridgeEnvironment::Staging;
-		else if (EnvironmentStr == TEXT("Production"))  Env = EDataBridgeEnvironment::Production;
+		ParseEnvironment(EnvironmentOverride.ToString(), Env);
 	}
 
 	const FString* URLPtr = Source->URLs.Find(Env);
@@ -112,42 +124,52 @@ UDataBridgeUpdateCommandlet::FSourceResult UDataBridgeUpdateCommandlet::ProcessS
 		return Result;
 	}
 
-	// 기존 테이블 로드
-	UDataTable* ExistingTable = Cast<UDataTable>(Source->TablePath.TryLoad());
-	if (!ExistingTable)
+	UObject* Loaded = Source->TablePath.TryLoad();
+	if (!Loaded)
 	{
 		Result.Message = FString::Printf(TEXT("Failed to load table: %s"), *Source->TablePath.ToString());
 		return Result;
 	}
 
-	// 동기 fetch
+	if (UDataTable* DataTable = Cast<UDataTable>(Loaded))
+		return ProcessDataTable(*Source, DataTable, *URLPtr, bDryRun);
+
+	if (UCurveTable* CurveTable = Cast<UCurveTable>(Loaded))
+		return ProcessCurveTable(*Source, CurveTable, *URLPtr, bDryRun);
+
+	Result.Message = TEXT("TablePath is not a DataTable or CurveTable");
+	return Result;
+}
+
+UDataBridgeUpdateCommandlet::FSourceResult UDataBridgeUpdateCommandlet::ProcessDataTable(
+	const FDataBridgeSource& Source, UDataTable* ExistingTable, const FString& URL, bool bDryRun)
+{
+	FSourceResult Result;
+	Result.SourceName = Source.SourceName;
+
 	FString Body;
-	if (!FetchSync(*URLPtr, Body))
+	if (!FetchSync(URL, Body))
 	{
 		Result.Message = TEXT("HTTP fetch failed");
 		return Result;
 	}
 
-	// 임시 테이블에 파싱
 	UDataTable* TempTable = NewObject<UDataTable>(GetTransientPackage());
 	TempTable->RowStruct = const_cast<UScriptStruct*>(ExistingTable->GetRowStruct());
 
-	TArray<FString> Problems;
-	if (Source->Format == EDataBridgeFormat::Csv)
-		Problems = TempTable->CreateTableFromCSVString(Body);
-	else
-		Problems = TempTable->CreateTableFromJSONString(Body);
+	TArray<FString> Problems = (Source.Format == EDataBridgeFormat::Csv)
+		? TempTable->CreateTableFromCSVString(Body)
+		: TempTable->CreateTableFromJSONString(Body);
 
-	if (Problems.Num() > 0)
+	if (TempTable->GetRowMap().Num() == 0 && Problems.Num() > 0)
 	{
 		Result.Message = FString::Printf(TEXT("Parse error: %s"), *FString::Join(Problems, TEXT(", ")));
 		return Result;
 	}
 
-	// Diff 계산
 	FDataTableDiff Diff = ComputeDataTableDiff(ExistingTable, TempTable);
-	FString DiffLog = Diff.ToString(SourceName.ToString(), *URLPtr, Source->TablePath.ToString());
-	UE_LOG(LogDataBridgeEditor, Log, TEXT("\n%s"), *DiffLog);
+	UE_LOG(LogDataBridgeEditor, Log, TEXT("\n%s"),
+		*Diff.ToString(Source.SourceName.ToString(), URL, Source.TablePath.ToString()));
 
 	if (!Diff.HasChanges())
 	{
@@ -164,13 +186,12 @@ UDataBridgeUpdateCommandlet::FSourceResult UDataBridgeUpdateCommandlet::ProcessS
 		return Result;
 	}
 
-	// 변경 적용 및 저장
-	if (Source->Format == EDataBridgeFormat::Csv)
+	if (Source.Format == EDataBridgeFormat::Csv)
 		ExistingTable->CreateTableFromCSVString(Body);
 	else
 		ExistingTable->CreateTableFromJSONString(Body);
 
-	if (!SaveTable(ExistingTable))
+	if (!SaveAsset(ExistingTable))
 	{
 		Result.Message = TEXT("Failed to save package");
 		return Result;
@@ -179,6 +200,64 @@ UDataBridgeUpdateCommandlet::FSourceResult UDataBridgeUpdateCommandlet::ProcessS
 	Result.bSuccess = true;
 	Result.Message = FString::Printf(TEXT("+%d ~%d -%d rows"),
 		Diff.AddedRows.Num(), Diff.ModifiedRows.Num(), Diff.RemovedRows.Num());
+	return Result;
+}
+
+UDataBridgeUpdateCommandlet::FSourceResult UDataBridgeUpdateCommandlet::ProcessCurveTable(
+	const FDataBridgeSource& Source, UCurveTable* ExistingTable, const FString& URL, bool bDryRun)
+{
+	FSourceResult Result;
+	Result.SourceName = Source.SourceName;
+
+	FString Body;
+	if (!FetchSync(URL, Body))
+	{
+		Result.Message = TEXT("HTTP fetch failed");
+		return Result;
+	}
+
+	// CurveTable diff은 v1.0 범위 외 (스펙 Open Question). Row 추가/제거만 감지.
+	UCurveTable* TempTable = NewObject<UCurveTable>(GetTransientPackage());
+	TArray<FString> Problems = (Source.Format == EDataBridgeFormat::Csv)
+		? TempTable->CreateTableFromCSVString(Body)
+		: TempTable->CreateTableFromJSONString(Body);
+
+	if (TempTable->GetRowMap().Num() == 0 && Problems.Num() > 0)
+	{
+		Result.Message = FString::Printf(TEXT("Parse error: %s"), *FString::Join(Problems, TEXT(", ")));
+		return Result;
+	}
+
+	const auto& OldRows = ExistingTable->GetRowMap();
+	const auto& NewRows = TempTable->GetRowMap();
+	TArray<FName> Added, Removed;
+	for (auto& Pair : NewRows) if (!OldRows.Contains(Pair.Key)) Added.Add(Pair.Key);
+	for (auto& Pair : OldRows) if (!NewRows.Contains(Pair.Key)) Removed.Add(Pair.Key);
+
+	UE_LOG(LogDataBridgeEditor, Log, TEXT("[DataBridge] Source: %s (CurveTable)\n  URL:    %s\n  Target: %s\n  Rows: +%d -%d (curve values not diffed)"),
+		*Source.SourceName.ToString(), *URL, *Source.TablePath.ToString(), Added.Num(), Removed.Num());
+
+	if (bDryRun)
+	{
+		UE_LOG(LogDataBridgeEditor, Log, TEXT("  [DryRun] No changes saved."));
+		Result.bSuccess = true;
+		Result.Message = TEXT("DryRun — changes not saved");
+		return Result;
+	}
+
+	if (Source.Format == EDataBridgeFormat::Csv)
+		ExistingTable->CreateTableFromCSVString(Body);
+	else
+		ExistingTable->CreateTableFromJSONString(Body);
+
+	if (!SaveAsset(ExistingTable))
+	{
+		Result.Message = TEXT("Failed to save package");
+		return Result;
+	}
+
+	Result.bSuccess = true;
+	Result.Message = FString::Printf(TEXT("CurveTable saved (+%d -%d rows)"), Added.Num(), Removed.Num());
 	return Result;
 }
 
@@ -204,7 +283,6 @@ bool UDataBridgeUpdateCommandlet::FetchSync(const FString& URL, FString& OutBody
 		});
 	Request->ProcessRequest();
 
-	// HTTP timeout(서버 응답)에 더해 5초 grace를 주고도 안 끝나면 강제 중단.
 	const double Deadline = FPlatformTime::Seconds() + TimeoutSeconds + 5.0;
 
 	while (!Result->bDone)
@@ -227,9 +305,9 @@ bool UDataBridgeUpdateCommandlet::FetchSync(const FString& URL, FString& OutBody
 	return Result->bSuccess;
 }
 
-bool UDataBridgeUpdateCommandlet::SaveTable(UDataTable* Table)
+bool UDataBridgeUpdateCommandlet::SaveAsset(UObject* Asset)
 {
-	UPackage* Package = Table->GetOutermost();
+	UPackage* Package = Asset->GetOutermost();
 	Package->MarkPackageDirty();
 
 	FString FilePath = FPackageName::LongPackageNameToFilename(
@@ -239,5 +317,5 @@ bool UDataBridgeUpdateCommandlet::SaveTable(UDataTable* Table)
 	Args.TopLevelFlags = RF_Public | RF_Standalone;
 	Args.SaveFlags = SAVE_NoError;
 
-	return UPackage::SavePackage(Package, Table, *FilePath, Args);
+	return UPackage::SavePackage(Package, Asset, *FilePath, Args);
 }

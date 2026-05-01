@@ -13,5 +13,6 @@ private:
 	static void BuildDropdownMenu(FMenuBuilder& MenuBuilder);
 	static void BuildSourcesSubmenu(FMenuBuilder& MenuBuilder);
 
-	static class UDataBridgeSubsystem* FindPIESubsystem();
+	static void RefreshSource(FName SourceName);
+	static void RefreshAll();
 };

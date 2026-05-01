@@ -4,11 +4,20 @@
 
 class UDataTable;
 
+struct FDataBridgeFieldChange
+{
+	FString PropertyName;
+	FString OldValue;
+	FString NewValue;
+};
+
 struct DATABRIDGE_API FDataTableDiff
 {
 	TArray<FName> AddedRows;
 	TArray<FName> RemovedRows;
 	TArray<FName> ModifiedRows;
+	// 행 단위 필드 변경 내역 (ModifiedRows의 각 RowName에 대한 상세)
+	TMap<FName, TArray<FDataBridgeFieldChange>> ModifiedRowFields;
 
 	bool HasChanges() const
 	{
