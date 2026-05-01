@@ -10,13 +10,31 @@ bool FDataBridgeJsonDataTableParser::ParseToDataTable(const FString& RawData, UD
 		return false;
 	}
 
-	TArray<FString> Problems = TargetTable->CreateTableFromJSONString(RawData);
-	if (Problems.Num() > 0)
+	const UScriptStruct* RowStruct = TargetTable->GetRowStruct();
+	if (!RowStruct)
 	{
-		OutError = FString::Join(Problems, TEXT(", "));
-		UE_LOG(LogDataBridge, Warning, TEXT("JSON parse problems: %s"), *OutError);
+		OutError = TEXT("TargetTable has no RowStruct");
 		return false;
 	}
 
+	UDataTable* TempTable = NewObject<UDataTable>(GetTransientPackage());
+	TempTable->RowStruct = const_cast<UScriptStruct*>(RowStruct);
+
+	TArray<FString> Problems = TempTable->CreateTableFromJSONString(RawData);
+	const bool bHasRows = TempTable->GetRowMap().Num() > 0;
+
+	if (!bHasRows && Problems.Num() > 0)
+	{
+		OutError = FString::Join(Problems, TEXT(", "));
+		UE_LOG(LogDataBridge, Warning, TEXT("JSON parse failed (TargetTable preserved): %s"), *OutError);
+		return false;
+	}
+
+	if (Problems.Num() > 0)
+	{
+		UE_LOG(LogDataBridge, Warning, TEXT("JSON parse warnings: %s"), *FString::Join(Problems, TEXT(", ")));
+	}
+
+	TargetTable->CreateTableFromJSONString(RawData);
 	return true;
 }

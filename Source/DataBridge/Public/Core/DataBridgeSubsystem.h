@@ -25,7 +25,7 @@ public:
 	void FetchTable(const FString& URL, UDataTable* TargetTable, EDataBridgeFormat Format = EDataBridgeFormat::Json);
 
 	UFUNCTION(BlueprintCallable, Category = "DataBridge")
-	void FetchCurveTable(const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format = EDataBridgeFormat::Json);
+	void FetchCurveTable(const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format = EDataBridgeFormat::Csv);
 
 	// === Source-based API ===
 
@@ -74,16 +74,12 @@ private:
 
 	FString MakeCacheKey(FName SourceName) const;
 	bool IsCacheValid(FName SourceName, float TTLSeconds) const;
-	void UpdateCache(FName SourceName);
+	void StoreCache(FName SourceName, const FString& Body, EDataBridgeFormat Format, bool bIsCurveTable);
+
+	bool TryServeFromCache(FName SourceName, float TTLSeconds, UDataTable* TargetTable, UCurveTable* CurveTable);
 
 	TSharedPtr<IDataBridgeHttpClient> HttpClient;
 	TMap<FName, TSharedPtr<IDataBridgeParser>> Parsers;
-
-	struct FCacheEntry
-	{
-		double FetchTime = 0.0;
-	};
-	TMap<FString, FCacheEntry> Cache;
 
 	EDataBridgeEnvironment CurrentEnvironment = EDataBridgeEnvironment::Local;
 

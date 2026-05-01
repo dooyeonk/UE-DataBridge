@@ -184,12 +184,17 @@ UDataBridgeUpdateCommandlet::FSourceResult UDataBridgeUpdateCommandlet::ProcessS
 
 bool UDataBridgeUpdateCommandlet::FetchSync(const FString& URL, FString& OutBody)
 {
+	const UDataBridgeSettings* Settings = GetDefault<UDataBridgeSettings>();
+	const float TimeoutSeconds = (Settings && Settings->RequestTimeoutSeconds > 0.0f)
+		? Settings->RequestTimeoutSeconds : 30.0f;
+
 	struct FResult { bool bDone = false; bool bSuccess = false; FString Body; };
 	TSharedPtr<FResult> Result = MakeShared<FResult>();
 
 	TSharedRef<IHttpRequest> Request = FHttpModule::Get().CreateRequest();
 	Request->SetURL(URL);
 	Request->SetVerb(TEXT("GET"));
+	Request->SetTimeout(TimeoutSeconds);
 	Request->OnProcessRequestComplete().BindLambda(
 		[Result](FHttpRequestPtr, FHttpResponsePtr Response, bool bConnected)
 		{
@@ -199,9 +204,20 @@ bool UDataBridgeUpdateCommandlet::FetchSync(const FString& URL, FString& OutBody
 		});
 	Request->ProcessRequest();
 
-	// 완료까지 엔진 틱 펌핑
+	// HTTP timeout(서버 응답)에 더해 5초 grace를 주고도 안 끝나면 강제 중단.
+	const double Deadline = FPlatformTime::Seconds() + TimeoutSeconds + 5.0;
+
 	while (!Result->bDone)
 	{
+		if (FPlatformTime::Seconds() > Deadline)
+		{
+			UE_LOG(LogDataBridgeEditor, Warning,
+				TEXT("FetchSync: timeout after %.1fs (URL: %s)"), TimeoutSeconds + 5.0, *URL);
+			Request->CancelRequest();
+			OutBody.Reset();
+			return false;
+		}
+
 		FPlatformProcess::Sleep(0.01f);
 		FHttpModule::Get().GetHttpManager().Tick(0.01f);
 		FTSTicker::GetCoreTicker().Tick(0.01f);

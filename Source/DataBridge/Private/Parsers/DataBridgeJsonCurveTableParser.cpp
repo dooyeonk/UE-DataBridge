@@ -16,13 +16,23 @@ bool FDataBridgeJsonCurveTableParser::ParseToCurveTable(const FString& RawData, 
 		return false;
 	}
 
-	TArray<FString> Problems = TargetTable->CreateTableFromJSONString(RawData);
-	if (Problems.Num() > 0)
+	UCurveTable* TempTable = NewObject<UCurveTable>(GetTransientPackage());
+
+	TArray<FString> Problems = TempTable->CreateTableFromJSONString(RawData);
+	const bool bHasRows = TempTable->GetRowMap().Num() > 0;
+
+	if (!bHasRows && Problems.Num() > 0)
 	{
 		OutError = FString::Join(Problems, TEXT(", "));
-		UE_LOG(LogDataBridge, Warning, TEXT("JSON CurveTable parse problems: %s"), *OutError);
+		UE_LOG(LogDataBridge, Warning, TEXT("JSON CurveTable parse failed (TargetTable preserved): %s"), *OutError);
 		return false;
 	}
 
+	if (Problems.Num() > 0)
+	{
+		UE_LOG(LogDataBridge, Warning, TEXT("JSON CurveTable parse warnings: %s"), *FString::Join(Problems, TEXT(", ")));
+	}
+
+	TargetTable->CreateTableFromJSONString(RawData);
 	return true;
 }

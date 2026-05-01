@@ -5,9 +5,27 @@
 #include "Parsers/DataBridgeJsonDataTableParser.h"
 #include "Parsers/DataBridgeCsvDataTableParser.h"
 #include "Parsers/DataBridgeJsonCurveTableParser.h"
+#include "Parsers/DataBridgeCsvCurveTableParser.h"
 #include "Engine/DataTable.h"
 #include "Engine/CurveTable.h"
 #include "HAL/IConsoleManager.h"
+
+namespace DataBridgeCachePrivate
+{
+	struct FCacheEntry
+	{
+		double FetchTime = 0.0;
+		FString Body;
+		EDataBridgeFormat Format = EDataBridgeFormat::Json;
+		bool bIsCurveTable = false;
+	};
+
+	// Process-level cache: persists across PIE restarts when bEnablePIECache=true.
+	// Cleared from Deinitialize when bEnablePIECache=false.
+	static TMap<FString, FCacheEntry> GCache;
+}
+
+using namespace DataBridgeCachePrivate;
 
 void UDataBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
@@ -24,6 +42,7 @@ void UDataBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	RegisterParser(MakeShared<FDataBridgeJsonDataTableParser>());
 	RegisterParser(MakeShared<FDataBridgeCsvDataTableParser>());
 	RegisterParser(MakeShared<FDataBridgeJsonCurveTableParser>());
+	RegisterParser(MakeShared<FDataBridgeCsvCurveTableParser>());
 
 	RegisterConsoleCommands();
 
@@ -40,7 +59,12 @@ void UDataBridgeSubsystem::Deinitialize()
 
 	HttpClient.Reset();
 	Parsers.Empty();
-	Cache.Empty();
+
+	const UDataBridgeSettings* Settings = GetDefault<UDataBridgeSettings>();
+	if (!Settings || !Settings->bEnablePIECache)
+	{
+		GCache.Empty();
+	}
 
 	Super::Deinitialize();
 }
@@ -107,13 +131,13 @@ void UDataBridgeSubsystem::FetchAllSources()
 
 void UDataBridgeSubsystem::InvalidateCache(FName SourceName)
 {
-	Cache.Remove(MakeCacheKey(SourceName));
+	GCache.Remove(MakeCacheKey(SourceName));
 	UE_LOG(LogDataBridge, Log, TEXT("Cache invalidated: %s"), *SourceName.ToString());
 }
 
 void UDataBridgeSubsystem::InvalidateAllCache()
 {
-	Cache.Empty();
+	GCache.Empty();
 	UE_LOG(LogDataBridge, Log, TEXT("All cache invalidated"));
 }
 
@@ -227,14 +251,6 @@ void UDataBridgeSubsystem::FetchSourceWithCallback(FName SourceName, TFunction<v
 		return;
 	}
 
-	if (Source->CacheTTLSeconds > 0.0f && IsCacheValid(SourceName, Source->CacheTTLSeconds))
-	{
-		UE_LOG(LogDataBridge, Log, TEXT("Cache hit: %s"), *SourceName.ToString());
-		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
-		if (OnComplete) OnComplete(true);
-		return;
-	}
-
 	FString URL = ResolveURL(*Source);
 	if (URL.IsEmpty())
 	{
@@ -255,11 +271,26 @@ void UDataBridgeSubsystem::FetchSourceWithCallback(FName SourceName, TFunction<v
 		return;
 	}
 
+	UDataTable* DataTable = Cast<UDataTable>(TableObject);
+	UCurveTable* CurveTable = Cast<UCurveTable>(TableObject);
+
+	// Cache hit — re-apply cached body to TargetTable, no HTTP
+	if (Source->CacheTTLSeconds > 0.0f && IsCacheValid(SourceName, Source->CacheTTLSeconds))
+	{
+		if (TryServeFromCache(SourceName, Source->CacheTTLSeconds, DataTable, CurveTable))
+		{
+			UE_LOG(LogDataBridge, Log, TEXT("Cache hit: %s"), *SourceName.ToString());
+			OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
+			if (OnComplete) OnComplete(true);
+			return;
+		}
+	}
+
 	EDataBridgeFormat Format = Source->Format;
 
-	if (UDataTable* DataTable = Cast<UDataTable>(TableObject))
+	if (DataTable)
 		FetchTableInternal(SourceName, URL, DataTable, Format, MoveTemp(OnComplete));
-	else if (UCurveTable* CurveTable = Cast<UCurveTable>(TableObject))
+	else if (CurveTable)
 		FetchCurveTableInternal(SourceName, URL, CurveTable, Format, MoveTemp(OnComplete));
 	else
 	{
@@ -277,14 +308,38 @@ FString UDataBridgeSubsystem::MakeCacheKey(FName SourceName) const
 
 bool UDataBridgeSubsystem::IsCacheValid(FName SourceName, float TTLSeconds) const
 {
-	const FCacheEntry* Entry = Cache.Find(MakeCacheKey(SourceName));
+	const FCacheEntry* Entry = GCache.Find(MakeCacheKey(SourceName));
 	if (!Entry) return false;
 	return (FPlatformTime::Seconds() - Entry->FetchTime) < TTLSeconds;
 }
 
-void UDataBridgeSubsystem::UpdateCache(FName SourceName)
+void UDataBridgeSubsystem::StoreCache(FName SourceName, const FString& Body, EDataBridgeFormat Format, bool bIsCurveTable)
 {
-	Cache.FindOrAdd(MakeCacheKey(SourceName)).FetchTime = FPlatformTime::Seconds();
+	if (SourceName == NAME_None) return;
+
+	FCacheEntry& Entry = GCache.FindOrAdd(MakeCacheKey(SourceName));
+	Entry.FetchTime = FPlatformTime::Seconds();
+	Entry.Body = Body;
+	Entry.Format = Format;
+	Entry.bIsCurveTable = bIsCurveTable;
+}
+
+bool UDataBridgeSubsystem::TryServeFromCache(FName SourceName, float TTLSeconds, UDataTable* TargetTable, UCurveTable* CurveTable)
+{
+	const FCacheEntry* Entry = GCache.Find(MakeCacheKey(SourceName));
+	if (!Entry) return false;
+
+	FName ParserName = ResolveParserName(Entry->Format, FString(), Entry->bIsCurveTable);
+	TSharedPtr<IDataBridgeParser>* ParserPtr = Parsers.Find(ParserName);
+	if (!ParserPtr) return false;
+
+	FString ParseError;
+	if (Entry->bIsCurveTable && CurveTable)
+		return (*ParserPtr)->ParseToCurveTable(Entry->Body, CurveTable, ParseError);
+	if (!Entry->bIsCurveTable && TargetTable)
+		return (*ParserPtr)->ParseToDataTable(Entry->Body, TargetTable, ParseError);
+
+	return false;
 }
 
 void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& URL, UDataTable* TargetTable, EDataBridgeFormat Format, TFunction<void(bool)> OnComplete)
@@ -308,8 +363,12 @@ void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& U
 	}
 
 	TSharedPtr<IDataBridgeParser> Parser = *ParserPtr;
+	const EDataBridgeFormat ResolvedFormat =
+		(Format == EDataBridgeFormat::Auto)
+			? (URL.EndsWith(TEXT(".csv")) ? EDataBridgeFormat::Csv : EDataBridgeFormat::Json)
+			: Format;
 
-	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
+	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser, ResolvedFormat, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
 	{
 		if (!bSuccess)
 		{
@@ -337,7 +396,7 @@ void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& U
 			return;
 		}
 
-		if (SourceName != NAME_None) UpdateCache(SourceName);
+		StoreCache(SourceName, Body, ResolvedFormat, /*bIsCurveTable=*/false);
 
 		UE_LOG(LogDataBridge, Log, TEXT("FetchTable success: %s"), *SourceName.ToString());
 		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
@@ -366,8 +425,12 @@ void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FStri
 	}
 
 	TSharedPtr<IDataBridgeParser> Parser = *ParserPtr;
+	const EDataBridgeFormat ResolvedFormat =
+		(Format == EDataBridgeFormat::Auto)
+			? (URL.EndsWith(TEXT(".csv")) ? EDataBridgeFormat::Csv : EDataBridgeFormat::Json)
+			: Format;
 
-	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
+	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser, ResolvedFormat, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
 	{
 		if (!bSuccess)
 		{
@@ -395,7 +458,7 @@ void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FStri
 			return;
 		}
 
-		if (SourceName != NAME_None) UpdateCache(SourceName);
+		StoreCache(SourceName, Body, ResolvedFormat, /*bIsCurveTable=*/true);
 
 		UE_LOG(LogDataBridge, Log, TEXT("FetchCurveTable success: %s"), *SourceName.ToString());
 		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
@@ -419,7 +482,7 @@ FName UDataBridgeSubsystem::ResolveParserName(EDataBridgeFormat Format, const FS
 		Resolved = URL.EndsWith(TEXT(".csv")) ? EDataBridgeFormat::Csv : EDataBridgeFormat::Json;
 
 	if (bCurveTable)
-		return FName("JsonCurve");
+		return Resolved == EDataBridgeFormat::Csv ? FName("CsvCurve") : FName("JsonCurve");
 
 	return Resolved == EDataBridgeFormat::Csv ? FName("Csv") : FName("Json");
 }

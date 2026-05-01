@@ -18,7 +18,7 @@ public:
 	static void FetchTable(UObject* WorldContextObject, const FString& URL, UDataTable* TargetTable, EDataBridgeFormat Format = EDataBridgeFormat::Json);
 
 	UFUNCTION(BlueprintCallable, Category = "DataBridge", meta = (WorldContext = "WorldContextObject"))
-	static void FetchCurveTable(UObject* WorldContextObject, const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format = EDataBridgeFormat::Json);
+	static void FetchCurveTable(UObject* WorldContextObject, const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format = EDataBridgeFormat::Csv);
 
 	UFUNCTION(BlueprintCallable, Category = "DataBridge", meta = (WorldContext = "WorldContextObject"))
 	static void FetchSource(UObject* WorldContextObject, FName SourceName);
