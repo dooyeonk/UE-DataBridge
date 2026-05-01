@@ -1,8 +1,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/DataTable.h"
-#include "Curves/CurveTable.h"
 #include "DataBridgeTypes.generated.h"
 
 UENUM(BlueprintType)
