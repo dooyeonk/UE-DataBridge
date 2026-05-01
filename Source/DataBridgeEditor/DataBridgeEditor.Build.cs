@@ -15,6 +15,8 @@ public class DataBridgeEditor : ModuleRules
 			"Slate",
 			"SlateCore",
 			"ToolMenus",
+			"LevelEditor",
+			"Settings",
 			"DataBridge",
 		});
 	}
