@@ -1,0 +1,69 @@
+# =====================================================================
+# databridge-unlock.yml — DataBridge auto-update PR 머지 후 LFS 락 해제
+#
+# databridge-update.yml이 만든 PR이 머지되면 트리거.
+# 그 PR이 건드린 .uasset 파일들의 락만 해제.
+#
+# 머지 안 됐으면(close만 됐으면) 동작 안 함 (안전 가드).
+# =====================================================================
+name: DataBridge Release Locks
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  unlock:
+    # 머지된 PR + databridge 라벨이 붙은 것만
+    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'databridge')
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Get files changed in merged PR
+        id: files
+        shell: pwsh
+        run: |
+          $base = "${{ github.event.pull_request.base.sha }}"
+          $head = "${{ github.event.pull_request.head.sha }}"
+          $files = git diff --name-only $base $head | Where-Object { $_ -like "*.uasset" }
+          if (-not $files -or $files.Count -eq 0) {
+            Write-Host "No .uasset changes in this PR. Nothing to unlock."
+            "has_files=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+          "has_files=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          ($files -join "`n") | Out-File -FilePath uasset_files.txt
+
+      - name: Release locks
+        if: steps.files.outputs.has_files == 'true'
+        shell: pwsh
+        run: |
+          $files = Get-Content uasset_files.txt
+          $released = @()
+          $failed = @()
+          foreach ($f in $files) {
+            git lfs unlock $f 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $released += $f } else { $failed += $f }
+          }
+          Write-Host "Released $($released.Count) lock(s)"
+          $released | ForEach-Object { Write-Host "  $_" }
+          if ($failed.Count -gt 0) {
+            Write-Warning "Failed to unlock $($failed.Count) file(s):"
+            $failed | ForEach-Object { Write-Warning "  - $_" }
+            # 실패해도 워크플로우는 성공 처리 (이미 다른 곳에서 해제됐을 수 있음)
+          }
+
+      # 옵션: 머지된 brainch 정리
+      - name: Delete merged branch
+        if: steps.files.outputs.has_files == 'true' && startsWith(github.event.pull_request.head.ref, 'databridge/auto-')
+        shell: pwsh
+        run: |
+          $branch = "${{ github.event.pull_request.head.ref }}"
+          git push origin --delete $branch 2>&1 | Out-Null

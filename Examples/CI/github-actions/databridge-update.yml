@@ -1,0 +1,174 @@
+# =====================================================================
+# databridge-update.yml — 스케줄로 DataBridge 갱신 + PR 자동 생성
+#
+# 이 파일은 사용 프로젝트의 .github/workflows/ 로 복사한 뒤
+# 환경(UE 경로, 러너 OS, 시크릿 등)에 맞춰 수정해서 사용.
+#
+# 흐름:
+#   1. 스케줄(cron) 또는 수동 dispatch로 트리거
+#   2. 체크아웃 + UE editor commandlet 실행 (DryRun으로 영향 파일 파악)
+#   3. 영향받는 .uasset 락 획득
+#   4. 본 갱신 실행
+#   5. peter-evans/create-pull-request 액션으로 PR 자동 생성
+#   6. 락 해제는 별도 워크플로우(databridge-unlock.yml)에서 머지 후 처리
+#
+# 가정:
+#   - self-hosted runner에 UE Editor 설치됨 (cloud runner는 비현실적)
+#   - LFS 사용 (선택 — 락 단계는 if 절로 가드)
+#   - GITHUB_TOKEN 또는 PAT 권한: contents:write, pull-requests:write
+# =====================================================================
+name: DataBridge Auto-Update
+
+on:
+  schedule:
+    # 매일 오전 9시 (KST = UTC+9 → UTC 00:00)
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      source_name:
+        description: 'Source name (or "All")'
+        required: false
+        default: 'All'
+      environment:
+        description: 'Environment (Local/Development/Staging/Production)'
+        required: false
+        default: 'Staging'
+
+jobs:
+  update:
+    # UE editor가 설치된 self-hosted runner 필요. tag는 환경에 맞게.
+    runs-on: [self-hosted, windows, ue-5.6]
+    timeout-minutes: 30
+
+    env:
+      UE_CMD: 'C:\Program Files\Epic Games\UE_5.6\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
+      PROJECT_PATH: '${{ github.workspace }}\MyProject.uproject'  # 프로젝트별 수정
+      SOURCE_NAME: ${{ github.event.inputs.source_name || 'All' }}
+      ENV_NAME: ${{ github.event.inputs.environment || 'Staging' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      # ---------------------------------------------------------------
+      # 1. DryRun → 영향받을 .uasset 파악
+      # ---------------------------------------------------------------
+      - name: DryRun (capture affected files + diff)
+        id: dryrun
+        shell: pwsh
+        run: |
+          $args = @("$env:PROJECT_PATH", "-run=DataBridgeUpdate", "-unattended", "-nopause", "-DryRun", "-Environment=$env:ENV_NAME")
+          if ("$env:SOURCE_NAME" -eq "All") { $args += "-All" } else { $args += "-SourceName=$env:SOURCE_NAME" }
+
+          $output = & "$env:UE_CMD" @args 2>&1 | Out-String
+          $files = $output -split "`n" | Select-String "Target: (.+)" | ForEach-Object {
+            $p = $_.Matches[0].Groups[1].Value.Trim()
+            $p = $p -replace "^/Game/", "Content/"
+            $p = $p -replace "\.[^./]+$", ".uasset"
+            $p
+          }
+
+          if ($files.Count -eq 0) {
+            Write-Host "No changes detected. Exiting."
+            "has_changes=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          "has_changes=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          ($files -join "`n") | Out-File -FilePath affected_files.txt
+          $output | Out-File -FilePath dryrun_output.txt
+
+      - name: Skip if no changes
+        if: steps.dryrun.outputs.has_changes != 'true'
+        run: echo "No changes — skipping rest of workflow"
+
+      # ---------------------------------------------------------------
+      # 2. LFS lock (있을 때만)
+      # ---------------------------------------------------------------
+      - name: Acquire LFS locks
+        if: steps.dryrun.outputs.has_changes == 'true'
+        shell: pwsh
+        run: |
+          $files = Get-Content affected_files.txt
+          $locked = @()
+          $failed = @()
+          foreach ($f in $files) {
+            git lfs lock $f 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $locked += $f } else { $failed += $f }
+          }
+          ($locked -join "`n") | Out-File locked_files.txt
+          if ($locked.Count -eq 0) {
+            Write-Error "No files could be locked"
+            exit 1
+          }
+          if ($failed.Count -gt 0) {
+            Write-Warning "Failed to lock: $($failed -join ', ')"
+          }
+
+      # ---------------------------------------------------------------
+      # 3. 본 갱신
+      # ---------------------------------------------------------------
+      - name: Run DataBridge update
+        if: steps.dryrun.outputs.has_changes == 'true'
+        shell: pwsh
+        run: |
+          $args = @("$env:PROJECT_PATH", "-run=DataBridgeUpdate", "-unattended", "-nopause", "-Environment=$env:ENV_NAME")
+          if ("$env:SOURCE_NAME" -eq "All") { $args += "-All" } else { $args += "-SourceName=$env:SOURCE_NAME" }
+          & "$env:UE_CMD" @args
+          if ($LASTEXITCODE -ge 2) {
+            # 전체 실패 → 락 즉시 해제
+            Get-Content locked_files.txt | ForEach-Object { git lfs unlock $_ 2>&1 | Out-Null }
+            exit $LASTEXITCODE
+          }
+
+      # ---------------------------------------------------------------
+      # 4. PR 생성 (peter-evans 액션 사용 — branch + commit + PR 한방)
+      # ---------------------------------------------------------------
+      - name: Read DryRun output
+        if: steps.dryrun.outputs.has_changes == 'true'
+        id: diff
+        shell: pwsh
+        run: |
+          $diff = Get-Content dryrun_output.txt -Raw
+          # multiline GITHUB_OUTPUT
+          "diff<<EOF`n$diff`nEOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Create Pull Request
+        if: steps.dryrun.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "DataBridge auto-update: ${{ env.SOURCE_NAME }} (${{ env.ENV_NAME }})"
+          branch: databridge/auto-${{ github.run_id }}
+          base: main
+          delete-branch: false   # 락 해제 워크플로우가 처리할 때까지 유지
+          title: "DataBridge: auto-update ${{ env.SOURCE_NAME }} (${{ env.ENV_NAME }})"
+          body: |
+            Automated DataBridge update.
+
+            **Sources**: `${{ env.SOURCE_NAME }}`
+            **Environment**: `${{ env.ENV_NAME }}`
+            **Run**: ${{ github.run_id }}
+
+            ## Diff
+
+            ```
+            ${{ steps.diff.outputs.diff }}
+            ```
+
+            > Locks are held on affected `.uasset` files.
+            > After merge, the `databridge-unlock.yml` workflow releases them.
+          labels: databridge,auto-update
+
+      # ---------------------------------------------------------------
+      # 5. PR 생성 실패 시 락 회수 (안전장치)
+      # ---------------------------------------------------------------
+      - name: Cleanup locks on failure
+        if: failure() && steps.dryrun.outputs.has_changes == 'true'
+        shell: pwsh
+        run: |
+          if (Test-Path locked_files.txt) {
+            Get-Content locked_files.txt | ForEach-Object { git lfs unlock $_ 2>&1 | Out-Null }
+          }

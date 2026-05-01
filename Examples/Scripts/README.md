@@ -71,13 +71,16 @@ MyProject/
 
 | 파일 | 환경 | 용도 |
 |---|---|---|
-| **`update_data.ps1`** | Windows (PowerShell, 권장) | 가장 단순한 갱신 — VCS 통합 없음 |
+| **`update_data.ps1`** | Windows (PowerShell, 권장) | 단순 갱신 — VCS 통합 없음 |
 | `update_data.bat` | Windows (CMD) | PowerShell 못 쓰는 환경 |
 | `update_data.sh` | macOS / Linux | 동등한 셸 버전 |
-| **`update_data_lfs.ps1`** | Windows + Git LFS | LFS 락 획득 → 갱신 → 자동 commit/push |
+| **`update_data_lfs.ps1`** | Windows + Git LFS | **Manual flow**: 락 획득 + 갱신 후 정지 (사람이 commit/unlock) |
+| `release_locks_after_merge.ps1` | Git LFS | 머지 검증 후 락 일괄 해제 (manual / CI 모두 사용 가능) |
 | `update_data_perforce.bat` | Windows + Perforce | `p4 edit` → 갱신 → `p4 submit` |
 
-> **추천 시작점**: VCS 통합 없는 환경이면 `update_data.ps1`. Git LFS 쓰면 `update_data_lfs.ps1`.
+> **추천 시작점**: 개인 / 수동 환경 → `update_data.ps1` 또는 `update_data_lfs.ps1`.
+>
+> 팀 자동화 (스케줄, PR 생성)는 `Examples/Scripts/`가 아니라 **사용 프로젝트의 CI workflow**에서 구성하는 게 맞습니다. 예제는 [`Examples/CI/github-actions/`](../CI/github-actions/) 참고.
 
 ---
 
@@ -108,24 +111,57 @@ MyProject/
 - 전체 실패 → 갱신 없음, exit 2
 - 설정 오류 → 갱신 없음, exit 3
 
-### B) Git LFS 자동화 (`update_data_lfs.ps1`)
+### B) Git LFS — Manual flow (`update_data_lfs.ps1`)
 
-LFS로 `.uasset`을 관리하면 락(lock) 충돌이 흔합니다. 이 스크립트는:
+**개인 / 수동 환경** 권장. 자동 commit 안 함.
 
-1. **DryRun으로 영향받을 `.uasset` 파악**
-2. **각 파일에 `git lfs lock` 시도**
-3. **락 성공한 파일만** Commandlet에 넘김 (`-Filter` 사용)
-4. **갱신 → `git add` → `git commit` → `git push`**
-5. **`finally` 블록에서 락 해제** (실패해도 무조건 풀림)
-6. **락 못 딴 파일은 stderr로 보고** + exit 1
+흐름:
+1. DryRun으로 영향받을 `.uasset` 파악
+2. 각 파일에 `git lfs lock` 시도
+3. 락 성공한 파일만 Commandlet에 넘김 (`-Filter` 사용)
+4. **여기서 정지** — 락 유지, 커밋 안 함
 
-사용:
+이후 사람이:
+1. 에디터에서 변경 확인 (Source Control panel)
+2. `git add` + `git commit -m "의미있는 메시지"` + `git push`
+3. `git lfs unlock <files>` (또는 `release_locks_after_merge.ps1`)
+
 ```powershell
 .\update_data_lfs.ps1 -SourceName WeaponStats
-.\update_data_lfs.ps1                              # 전체
+.\update_data_lfs.ps1 -DryRun                      # 미리보기만
 ```
 
-### C) Perforce (`update_data_perforce.bat`)
+> **왜 자동 commit 안 함?** 받은 데이터가 이상해도 이미 commit되면 늦음. 검토 단계 필요. 자동화는 `update_data_lfs_ci.ps1` 따로.
+
+### C) CI / 스케줄 자동화
+
+이 폴더에 **CI용 스크립트는 없습니다.** 트리거(cron/dispatch), branch 정책, PR 포맷, 알림 등은 **사용 프로젝트가 결정**할 일이지 플러그인이 강제할 영역이 아닙니다.
+
+대신 [`Examples/CI/github-actions/`](../CI/github-actions/)에 **워크플로우 YAML 예제**가 있습니다:
+- `databridge-update.yml` — 스케줄 + dispatch 트리거, PR 자동 생성
+- `databridge-unlock.yml` — PR 머지 시 락 해제
+
+자기 프로젝트 `.github/workflows/`에 복사 후 환경값 (UE 경로, runner 라벨, 프로젝트 파일명) 수정해서 사용.
+
+### D) PR 머지 후 락 해제 (`release_locks_after_merge.ps1`)
+
+CI flow에서 만든 PR이 머지된 뒤 호출. **머지 검증 후에만** 락 해제 (안 됐으면 거부).
+
+```powershell
+# branch 이름으로
+.\release_locks_after_merge.ps1 -Branch databridge/auto-20260502-103045
+
+# PR 번호로 (gh CLI 필요)
+.\release_locks_after_merge.ps1 -PRNumber 123
+```
+
+검증:
+- PR이 실제로 BaseBranch에 머지됐는지 확인 (안 됐으면 abort)
+- branch가 건드린 `.uasset` 목록만 unlock (다른 파일 영향 X)
+
+> **GitHub Actions로 자동화 가능**: PR `closed` + `merged=true` 이벤트에 이 스크립트 실행. 사람 손 안 가도 됨.
+
+### E) Perforce (`update_data_perforce.bat`)
 
 `p4 edit`로 체크아웃 → 갱신 → `p4 submit`. Perforce 클라이언트 워크스페이스 안에서 실행.
 
@@ -167,7 +203,10 @@ git lfs unlock --id=<id> --force       # 타인 락 강제 해제 (관리자 권
 ```
 
 ### 스크립트 중간에 Ctrl+C로 끊어버린 경우 (LFS 락이 남음)
-→ 위와 동일한 `git lfs unlock --force` 명령으로 해제. 스크립트의 `finally` 블록은 정상 종료/실패엔 동작하지만 강제 종료엔 호출 안 됨.
+→ Manual flow는 어차피 락을 자동 해제 안 하므로 평소처럼 `git lfs unlock <file>`. CI flow에서 Ctrl+C로 끊긴 경우 branch까지 미완 상태일 수 있음 — `git lfs locks`로 확인 후 `git lfs unlock --force <file>`.
+
+### CI에서 PR이 close됐는데 머지 안 됐을 때 락 해제
+→ `release_locks_after_merge.ps1`은 머지 안 된 branch의 unlock을 거부. 이 경우는 수동 해제: `git lfs unlock --force <file>`. 또는 CI workflow 자체에 close (not merged) 케이스 처리 추가.
 
 ---
 
@@ -209,11 +248,37 @@ Invoke-RestMethod -Uri $env:SLACK_WEBHOOK_URL -Method Post -Body (@{text=$Body} 
 
 ### 다른 VCS (SVN, Plastic SCM)
 
-`update_data_lfs.ps1` 구조를 그대로 따라가면 됩니다:
+`update_data_lfs.ps1` (manual flow) 구조를 그대로 따라가면 됩니다:
 1. 락 획득 단계 → SVN `svn lock` 또는 Plastic `cm lock`
 2. Commandlet 실행
-3. 커밋 단계 → 각 VCS 명령
-4. `finally`에서 락 해제
+3. **정지** — 사람이 검토 후 commit 결정
+4. commit/unlock은 사람이 (혹은 별도 helper 스크립트)
+
+CI 자동화는 자기 프로젝트의 CI workflow에서 구성. GitHub Actions 외 (GitLab CI, Jenkins 등)도 원리는 동일:
+1~3은 위와 동일
+4. `<vcs> commit` + `<vcs> push` (feature branch)
+5. Merge Request / Pull Request 생성
+6. 락은 머지 후 별도 워크플로우/스크립트로 해제
+
+GitHub Actions 예제는 [`../CI/github-actions/`](../CI/github-actions/) 참고.
+
+---
+
+## 설계 노트 — 왜 자동 커밋 안 함?
+
+`update_data_lfs.ps1`(manual)은 **fetch + save까지만** 합니다. 커밋은 사람이.
+
+이유:
+
+| 자동 커밋의 함정 | 이 디자인이 푸는 방식 |
+|---|---|
+| 받은 데이터가 이상해도 이미 commit | 사람이 에디터에서 검토 후 commit |
+| 메시지가 일반화 ("Auto-update X") | 의미 있는 메시지 ("밸런스 패스 5/1") |
+| Author가 bot | 실제 변경 주체가 author |
+| rollback 어려움 | commit 전에 reject 가능 |
+
+CI에서도 자동 커밋만 하지 않고 **PR을 만들어서 사람의 review를 거치도록** 함 (CI workflow 예제는 `../CI/github-actions/`).
+PR이 머지되어야 락이 풀림 → main 브랜치가 항상 검증된 상태 유지.
 
 ---
 
