@@ -17,6 +17,7 @@ public class DataBridgeEditor : ModuleRules
 			"ToolMenus",
 			"LevelEditor",
 			"Settings",
+			"HTTP",
 			"DataBridge",
 		});
 	}

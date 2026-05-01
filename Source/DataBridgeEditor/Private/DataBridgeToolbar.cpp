@@ -1,7 +1,7 @@
 #include "DataBridgeToolbar.h"
 #include "DataBridgeSubsystem.h"
 #include "DataBridgeSettings.h"
-#include "DataBridgeLog.h"
+#include "DataBridgeEditorLog.h"
 #include "ToolMenus.h"
 #include "ISettingsModule.h"
 #include "Engine/GameInstance.h"
@@ -53,7 +53,7 @@ void FDataBridgeToolbar::BuildDropdownMenu(FMenuBuilder& MenuBuilder)
 				}
 				else
 				{
-					UE_LOG(LogDataBridge, Warning, TEXT("Refresh All: no active PIE session"));
+					UE_LOG(LogDataBridgeEditor, Warning, TEXT("Refresh All: no active PIE session"));
 				}
 			}))
 		);
@@ -113,7 +113,7 @@ void FDataBridgeToolbar::BuildSourcesSubmenu(FMenuBuilder& MenuBuilder)
 				}
 				else
 				{
-					UE_LOG(LogDataBridge, Warning, TEXT("Refresh Source: no active PIE session"));
+					UE_LOG(LogDataBridgeEditor, Warning, TEXT("Refresh Source: no active PIE session"));
 				}
 			}))
 		);
