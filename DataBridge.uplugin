@@ -4,7 +4,7 @@
 	"VersionName": "1.0",
 	"FriendlyName": "DataBridge",
 	"Description": "Live Data Fetch Plugin",
-	"Category": "Other",
+	"Category": "Database",
 	"CreatedBy": "dooyeonk",
 	"CreatedByURL": "",
 	"DocsURL": "",
@@ -19,6 +19,11 @@
 			"Name": "DataBridge",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "DataBridgeEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit"
 		}
 	]
 }
