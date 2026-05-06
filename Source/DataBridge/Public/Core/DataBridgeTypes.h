@@ -31,7 +31,7 @@ struct FDataBridgeSource
 	UPROPERTY(EditAnywhere, Config, BlueprintReadOnly)
 	TMap<EDataBridgeEnvironment, FString> URLs;
 
-	UPROPERTY(EditAnywhere, Config, BlueprintReadOnly, meta = (AllowedClasses = "DataTable,CurveTable"))
+	UPROPERTY(EditAnywhere, Config, BlueprintReadOnly, meta = (AllowedClasses = "/Script/Engine.DataTable,/Script/Engine.CurveTable"))
 	FSoftObjectPath TablePath;
 
 	UPROPERTY(EditAnywhere, Config, BlueprintReadOnly)

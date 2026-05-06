@@ -86,7 +86,7 @@ void FDataBridgeToolbar::BuildDropdownMenu(FMenuBuilder& MenuBuilder)
 			FUIAction(FExecuteAction::CreateLambda([]()
 			{
 				FModuleManager::LoadModuleChecked<ISettingsModule>("Settings")
-					.ShowViewer(FName("Project"), FName("DataBridge"), FName("DataBridge"));
+					.ShowViewer(FName("Project"), FName("DataBridge"), FName("DataBridgeSettings"));
 			}))
 		);
 	}
