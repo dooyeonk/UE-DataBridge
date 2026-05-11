@@ -51,9 +51,13 @@ void UDataBridgeSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 void UDataBridgeSubsystem::Deinitialize()
 {
-	for (IConsoleCommand* Cmd : ConsoleCommands)
+	if (!IsEngineExitRequested())
 	{
-		IConsoleManager::Get().UnregisterConsoleObject(Cmd);
+		// 엔진 종료 시 IConsoleManager destruction order 이슈로 unregister가 crash. 종료 중엔 OS가 회수
+		for (IConsoleCommand* Cmd : ConsoleCommands)
+		{
+			IConsoleManager::Get().UnregisterConsoleObject(Cmd);
+		}
 	}
 	ConsoleCommands.Empty();
 
