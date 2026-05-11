@@ -417,13 +417,23 @@ void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& U
 			? (URL.EndsWith(TEXT(".csv")) ? EDataBridgeFormat::Csv : EDataBridgeFormat::Json)
 			: Format;
 
-	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser, ResolvedFormat, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
+	TWeakObjectPtr<UDataBridgeSubsystem> WeakThis(this);
+	TWeakObjectPtr<UDataTable> WeakTable(TargetTable);
+
+	HttpClient->Get(URL, [WeakThis, WeakTable, SourceName, Parser, ResolvedFormat, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
 	{
+		UDataBridgeSubsystem* Self = WeakThis.Get();
+		if (Self == nullptr)
+		{
+			UE_LOG(LogDataBridge, Verbose, TEXT("FetchTable response dropped — Subsystem invalid: %s"), *SourceName.ToString());
+			return;
+		}
+
 		if (!bSuccess)
 		{
 			FString Error = FString::Printf(TEXT("HTTP error: %d"), StatusCode);
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchTable failed — %s"), *Error);
-			OnFetchCompleted.Broadcast(SourceName, false, Error);
+			Self->OnFetchCompleted.Broadcast(SourceName, false, Error);
 			if (OnComplete) OnComplete(false);
 			return;
 		}
@@ -431,24 +441,33 @@ void UDataBridgeSubsystem::FetchTableInternal(FName SourceName, const FString& U
 		if (Body.IsEmpty())
 		{
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchTable: empty response"));
-			OnFetchCompleted.Broadcast(SourceName, false, TEXT("Empty response"));
+			Self->OnFetchCompleted.Broadcast(SourceName, false, TEXT("Empty response"));
+			if (OnComplete) OnComplete(false);
+			return;
+		}
+
+		UDataTable* Table = WeakTable.Get();
+		if (Table == nullptr)
+		{
+			UE_LOG(LogDataBridge, Warning, TEXT("FetchTable: TargetTable invalid (likely unloaded): %s"), *SourceName.ToString());
+			Self->OnFetchCompleted.Broadcast(SourceName, false, TEXT("TargetTable invalid"));
 			if (OnComplete) OnComplete(false);
 			return;
 		}
 
 		FString ParseError;
-		if (!Parser->ParseToDataTable(Body, TargetTable, ParseError))
+		if (!Parser->ParseToDataTable(Body, Table, ParseError))
 		{
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchTable parse error: %s"), *ParseError);
-			OnFetchCompleted.Broadcast(SourceName, false, ParseError);
+			Self->OnFetchCompleted.Broadcast(SourceName, false, ParseError);
 			if (OnComplete) OnComplete(false);
 			return;
 		}
 
-		StoreCache(SourceName, Body, ResolvedFormat, /*bIsCurveTable=*/false);
+		Self->StoreCache(SourceName, Body, ResolvedFormat, /*bIsCurveTable=*/false);
 
 		UE_LOG(LogDataBridge, Log, TEXT("FetchTable success: %s"), *SourceName.ToString());
-		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
+		Self->OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
 		if (OnComplete) OnComplete(true);
 	});
 }
@@ -479,13 +498,23 @@ void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FStri
 			? (URL.EndsWith(TEXT(".csv")) ? EDataBridgeFormat::Csv : EDataBridgeFormat::Json)
 			: Format;
 
-	HttpClient->Get(URL, [this, SourceName, TargetTable, Parser, ResolvedFormat, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
+	TWeakObjectPtr<UDataBridgeSubsystem> WeakThis(this);
+	TWeakObjectPtr<UCurveTable> WeakTable(TargetTable);
+
+	HttpClient->Get(URL, [WeakThis, WeakTable, SourceName, Parser, ResolvedFormat, OnComplete = MoveTemp(OnComplete)](bool bSuccess, const FString& Body, int32 StatusCode) mutable
 	{
+		UDataBridgeSubsystem* Self = WeakThis.Get();
+		if (Self == nullptr)
+		{
+			UE_LOG(LogDataBridge, Verbose, TEXT("FetchCurveTable response dropped — Subsystem invalid: %s"), *SourceName.ToString());
+			return;
+		}
+
 		if (!bSuccess)
 		{
 			FString Error = FString::Printf(TEXT("HTTP error: %d"), StatusCode);
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchCurveTable failed — %s"), *Error);
-			OnFetchCompleted.Broadcast(SourceName, false, Error);
+			Self->OnFetchCompleted.Broadcast(SourceName, false, Error);
 			if (OnComplete) OnComplete(false);
 			return;
 		}
@@ -493,24 +522,33 @@ void UDataBridgeSubsystem::FetchCurveTableInternal(FName SourceName, const FStri
 		if (Body.IsEmpty())
 		{
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchCurveTable: empty response"));
-			OnFetchCompleted.Broadcast(SourceName, false, TEXT("Empty response"));
+			Self->OnFetchCompleted.Broadcast(SourceName, false, TEXT("Empty response"));
+			if (OnComplete) OnComplete(false);
+			return;
+		}
+
+		UCurveTable* Table = WeakTable.Get();
+		if (Table == nullptr)
+		{
+			UE_LOG(LogDataBridge, Warning, TEXT("FetchCurveTable: TargetTable invalid (likely unloaded): %s"), *SourceName.ToString());
+			Self->OnFetchCompleted.Broadcast(SourceName, false, TEXT("TargetTable invalid"));
 			if (OnComplete) OnComplete(false);
 			return;
 		}
 
 		FString ParseError;
-		if (!Parser->ParseToCurveTable(Body, TargetTable, ParseError))
+		if (!Parser->ParseToCurveTable(Body, Table, ParseError))
 		{
 			UE_LOG(LogDataBridge, Warning, TEXT("FetchCurveTable parse error: %s"), *ParseError);
-			OnFetchCompleted.Broadcast(SourceName, false, ParseError);
+			Self->OnFetchCompleted.Broadcast(SourceName, false, ParseError);
 			if (OnComplete) OnComplete(false);
 			return;
 		}
 
-		StoreCache(SourceName, Body, ResolvedFormat, /*bIsCurveTable=*/true);
+		Self->StoreCache(SourceName, Body, ResolvedFormat, /*bIsCurveTable=*/true);
 
 		UE_LOG(LogDataBridge, Log, TEXT("FetchCurveTable success: %s"), *SourceName.ToString());
-		OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
+		Self->OnFetchCompleted.Broadcast(SourceName, true, TEXT(""));
 		if (OnComplete) OnComplete(true);
 	});
 }

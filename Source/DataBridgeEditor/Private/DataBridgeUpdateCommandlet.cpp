@@ -310,6 +310,13 @@ bool UDataBridgeUpdateCommandlet::SaveAsset(UObject* Asset)
 	UPackage* Package = Asset->GetOutermost();
 	Package->MarkPackageDirty();
 
+	// 에디터(toolbar) 호출은 dirty 표시만 — 사용자가 File → Save All Modified 결정
+	if (!IsRunningCommandlet())
+	{
+		return true;
+	}
+
+	// Commandlet (CI/headless) — 자동 저장
 	FString FilePath = FPackageName::LongPackageNameToFilename(
 		Package->GetName(), FPackageName::GetAssetPackageExtension());
 
