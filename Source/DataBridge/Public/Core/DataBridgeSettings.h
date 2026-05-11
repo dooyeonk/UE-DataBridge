@@ -27,6 +27,9 @@ public:
 	UPROPERTY(EditAnywhere, Config, Category = "Development")
 	float DefaultPIECacheTTLSeconds = 300.0f;
 
+	UPROPERTY(EditAnywhere, Config, Category = "Development", meta = (DisplayName = "Skip Fetch in PIE", ToolTip = "PIE 실행 시 자동 fetch 비활성화. 콘솔 명령 및 에디터 메뉴는 영향 없음"))
+	bool bSkipFetchInPIE = true;
+
 	UPROPERTY(EditAnywhere, Config, Category = "Network")
 	float RequestTimeoutSeconds = 10.0f;
 

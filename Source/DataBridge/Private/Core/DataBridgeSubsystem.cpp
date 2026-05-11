@@ -87,11 +87,21 @@ void UDataBridgeSubsystem::RegisterParser(TSharedPtr<IDataBridgeParser> Parser)
 
 void UDataBridgeSubsystem::FetchTable(const FString& URL, UDataTable* TargetTable, EDataBridgeFormat Format)
 {
+	if (ShouldSkipFetchInPIE())
+	{
+		UE_LOG(LogDataBridge, Log, TEXT("FetchTable skipped (PIE + bSkipFetchInPIE=true)"));
+		return;
+	}
 	FetchTableInternal(NAME_None, URL, TargetTable, Format);
 }
 
 void UDataBridgeSubsystem::FetchCurveTable(const FString& URL, UCurveTable* TargetTable, EDataBridgeFormat Format)
 {
+	if (ShouldSkipFetchInPIE())
+	{
+		UE_LOG(LogDataBridge, Log, TEXT("FetchCurveTable skipped (PIE + bSkipFetchInPIE=true)"));
+		return;
+	}
 	FetchCurveTableInternal(NAME_None, URL, TargetTable, Format);
 }
 
@@ -101,10 +111,27 @@ void UDataBridgeSubsystem::FetchCurveTable(const FString& URL, UCurveTable* Targ
 
 void UDataBridgeSubsystem::FetchSource(FName SourceName)
 {
+	if (ShouldSkipFetchInPIE())
+	{
+		UE_LOG(LogDataBridge, Log, TEXT("FetchSource skipped (PIE + bSkipFetchInPIE=true): %s"), *SourceName.ToString());
+		OnFetchCompleted.Broadcast(SourceName, true, FString());
+		return;
+	}
 	FetchSourceWithCallback(SourceName, nullptr);
 }
 
 void UDataBridgeSubsystem::FetchAllSources()
+{
+	if (ShouldSkipFetchInPIE())
+	{
+		UE_LOG(LogDataBridge, Log, TEXT("FetchAllSources skipped (PIE + bSkipFetchInPIE=true)"));
+		OnAllSourcesCompleted.Broadcast(true, 0);
+		return;
+	}
+	FetchAllSourcesInternal();
+}
+
+void UDataBridgeSubsystem::FetchAllSourcesInternal()
 {
 	const UDataBridgeSettings* Settings = GetDefault<UDataBridgeSettings>();
 
@@ -127,6 +154,24 @@ void UDataBridgeSubsystem::FetchAllSources()
 				OnAllSourcesCompleted.Broadcast(*FailCount == 0, *FailCount);
 		});
 	}
+}
+
+bool UDataBridgeSubsystem::ShouldSkipFetchInPIE() const
+{
+#if WITH_EDITOR
+	const UDataBridgeSettings* Settings = GetDefault<UDataBridgeSettings>();
+	if (Settings != nullptr && Settings->bSkipFetchInPIE)
+	{
+		if (const UWorld* World = GetWorld())
+		{
+			if (World->IsPlayInEditor())
+			{
+				return true;
+			}
+		}
+	}
+#endif
+	return false;
 }
 
 // ============================================================
@@ -163,18 +208,18 @@ void UDataBridgeSubsystem::RegisterConsoleCommands()
 {
 	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("DataBridge.RefreshAll"),
-		TEXT("Fetch all registered sources, ignoring cache"),
+		TEXT("Fetch all registered sources, ignoring cache (bypasses PIE skip)"),
 		FConsoleCommandDelegate::CreateLambda([this]()
 		{
 			InvalidateAllCache();
-			FetchAllSources();
+			FetchAllSourcesInternal();
 		}),
 		ECVF_Default
 	));
 
 	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("DataBridge.Refresh"),
-		TEXT("Fetch a single source by name, ignoring cache. Usage: DataBridge.Refresh <SourceName>"),
+		TEXT("Fetch a single source by name, ignoring cache (bypasses PIE skip). Usage: DataBridge.Refresh <SourceName>"),
 		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
 		{
 			if (Args.IsEmpty())
@@ -184,7 +229,7 @@ void UDataBridgeSubsystem::RegisterConsoleCommands()
 			}
 			FName SourceName = FName(*Args[0]);
 			InvalidateCache(SourceName);
-			FetchSource(SourceName);
+			FetchSourceWithCallback(SourceName, nullptr);
 		}),
 		ECVF_Default
 	));
