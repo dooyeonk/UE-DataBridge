@@ -23,6 +23,14 @@ namespace DataBridgeCachePrivate
 	// Process-level cache: persists across PIE restarts when bEnablePIECache=true.
 	// Cleared from Deinitialize when bEnablePIECache=false.
 	static TMap<FString, FCacheEntry> GCache;
+
+	static const TCHAR* GConsoleCommandNames[] = {
+		TEXT("DataBridge.RefreshAll"),
+		TEXT("DataBridge.Refresh"),
+		TEXT("DataBridge.SetEnvironment"),
+		TEXT("DataBridge.PrintSources"),
+		TEXT("DataBridge.InvalidateCache"),
+	};
 }
 
 using namespace DataBridgeCachePrivate;
@@ -54,12 +62,16 @@ void UDataBridgeSubsystem::Deinitialize()
 	if (!IsEngineExitRequested())
 	{
 		// 엔진 종료 시 IConsoleManager destruction order 이슈로 unregister가 crash. 종료 중엔 OS가 회수
-		for (IConsoleCommand* Cmd : ConsoleCommands)
+		// 캐시된 ptr 대신 이름으로 현재 객체를 다시 조회 — stale/freed ptr 회피
+		IConsoleManager& Manager = IConsoleManager::Get();
+		for (const TCHAR* Name : GConsoleCommandNames)
 		{
-			IConsoleManager::Get().UnregisterConsoleObject(Cmd);
+			if (IConsoleObject* Obj = Manager.FindConsoleObject(Name))
+			{
+				Manager.UnregisterConsoleObject(Obj);
+			}
 		}
 	}
-	ConsoleCommands.Empty();
 
 	HttpClient.Reset();
 	Parsers.Empty();
@@ -206,7 +218,7 @@ void UDataBridgeSubsystem::SetEnvironment(EDataBridgeEnvironment NewEnvironment)
 
 void UDataBridgeSubsystem::RegisterConsoleCommands()
 {
-	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("DataBridge.RefreshAll"),
 		TEXT("Fetch all registered sources, ignoring cache (bypasses PIE skip)"),
 		FConsoleCommandDelegate::CreateLambda([this]()
@@ -215,9 +227,9 @@ void UDataBridgeSubsystem::RegisterConsoleCommands()
 			FetchAllSourcesInternal();
 		}),
 		ECVF_Default
-	));
+	);
 
-	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("DataBridge.Refresh"),
 		TEXT("Fetch a single source by name, ignoring cache (bypasses PIE skip). Usage: DataBridge.Refresh <SourceName>"),
 		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
@@ -232,9 +244,9 @@ void UDataBridgeSubsystem::RegisterConsoleCommands()
 			FetchSourceWithCallback(SourceName, nullptr);
 		}),
 		ECVF_Default
-	));
+	);
 
-	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("DataBridge.SetEnvironment"),
 		TEXT("Switch environment at runtime. Usage: DataBridge.SetEnvironment <Local|Development|Staging|Production>"),
 		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
@@ -253,9 +265,9 @@ void UDataBridgeSubsystem::RegisterConsoleCommands()
 			UE_LOG(LogDataBridge, Log, TEXT("Environment set to: %s"), *EnvStr);
 		}),
 		ECVF_Default
-	));
+	);
 
-	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("DataBridge.PrintSources"),
 		TEXT("Print all registered sources with current environment and cache status"),
 		FConsoleCommandDelegate::CreateLambda([this]()
@@ -272,9 +284,9 @@ void UDataBridgeSubsystem::RegisterConsoleCommands()
 			}
 		}),
 		ECVF_Default
-	));
+	);
 
-	ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+	IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("DataBridge.InvalidateCache"),
 		TEXT("Invalidate cache. Usage: DataBridge.InvalidateCache [SourceName] (omit for all)"),
 		FConsoleCommandWithArgsDelegate::CreateLambda([this](const TArray<FString>& Args)
@@ -283,7 +295,7 @@ void UDataBridgeSubsystem::RegisterConsoleCommands()
 			else InvalidateCache(FName(*Args[0]));
 		}),
 		ECVF_Default
-	));
+	);
 }
 
 void UDataBridgeSubsystem::FetchSourceWithCallback(FName SourceName, TFunction<void(bool)> OnComplete)

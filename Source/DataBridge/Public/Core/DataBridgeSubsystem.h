@@ -84,6 +84,4 @@ private:
 	TMap<FName, TSharedPtr<IDataBridgeParser>> Parsers;
 
 	EDataBridgeEnvironment CurrentEnvironment = EDataBridgeEnvironment::Local;
-
-	TArray<IConsoleCommand*> ConsoleCommands;
 };
